@@ -1,0 +1,8 @@
+aiohttp>=3.9.0
+beautifulsoup4>=4.12.0
+pandas>=2.1.0
+sqlalchemy[asyncio]>=2.0.0
+# Add the driver for your specific DB:
+asyncpg        # For PostgreSQL
+# aiomysql     # For MySQL
+# aiosqlite    # For SQLite
