@@ -15,7 +15,7 @@ HEADERS = {
     "Referer": "https://www.google.com"
 }
 
-sem = asyncio.Semaphore(100)
+sem = asyncio.Semaphore(10)
 
 
 async def fetch_page(url: str, session: aiohttp.ClientSession) -> str:
@@ -23,7 +23,8 @@ async def fetch_page(url: str, session: aiohttp.ClientSession) -> str:
 
     try:
         async with sem:
-            async with session.get(url, headers=HEADERS, timeout=15) as response:
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with session.get(url, headers=HEADERS, timeout=timeout) as response:
                 # Check if the response is successful 200 ok code
                 response.raise_for_status()
                 return await response.text()
@@ -40,6 +41,6 @@ async def fetch_all(urls: List[str]) -> List[str]:
             tasks.append(fetch_page(url, session))
             
             #asyncio.gather runs all the tasks concurrently and waits for them to finish
-            pages_html = await asyncio.gather(*tasks)
-            return pages_html
+        pages_html = await asyncio.gather(*tasks)
+        return pages_html
         

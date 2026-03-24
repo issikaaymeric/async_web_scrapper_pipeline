@@ -5,7 +5,7 @@ def clean_scraped_data(raw_data: List[Dict]) -> List[Dict]:
     """
     Uses Pandas to clean and validate the list  of dictionaries.
     """
-    
+    raw_data = [item for item in raw_data if item is not None]
     if not raw_data:
         return []
     
@@ -15,6 +15,7 @@ def clean_scraped_data(raw_data: List[Dict]) -> List[Dict]:
     
     # 2. Data Cleaning
     
+    df['price'] = pd.to_numeric(df['price'], errors='coerce')
     df = df[df['title'] != 'N/A']
     df = df[df['price'] > 0]
     
@@ -25,7 +26,8 @@ def clean_scraped_data(raw_data: List[Dict]) -> List[Dict]:
     # 4. Transformation
     #convert all titles to uppercase
     
-    df['title'] = df['title'].str.title()
+    # df['title'] = df['title'].str.title()
+    df['title'] = df['title'].str.capitalize()  # Only first letter
     
     # 5. Convert back to a list of dictionaries for SQLAlchemy
     # 'records' format matches our Database Model exactly

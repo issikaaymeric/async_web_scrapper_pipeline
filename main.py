@@ -13,7 +13,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 executor = ProcessPoolExecutor()
 
-
+# Enter website link for scrapping
 BASE_URL = "https://www.amazon.com/s?k=headphones&_encoding=UTF8&content-id=amzn1.sym.f0670b1b-e1fd-4c67-a2b1-b8a347243628&pd_rd_r=58b78489-5fc1-4711-b59d-670648d404ee&pd_rd_w=KnD17&pd_rd_wg=U2U38&pf_rd_p=f0670b1b-e1fd-4c67-a2b1-b8a347243628&pf_rd_r=Q2RERNYT27AVNZA6XD5G&ref=pd_hp_d_btf_unk"
 
 async def run_pipeline():
@@ -41,12 +41,12 @@ async def run_pipeline():
     
     # 4. Parse each individual page
     print("Step 4: Extracting titles and prices...")
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     parsed_task = [
-        loop.run_in_executor(executor, parse_product_html, html, url)
-        for html, url in zip(html_contents, urls) # type: ignore
+        loop.run_in_executor(executor, parse_product_html, html, product_links)
+        for html, product_links in zip(html_contents, product_links) # type: ignore
     ]
-    raw_results = await asyncio.gather(*parsed_task), parse_multiple_pages(html_contents, product_links)
+    raw_results = await asyncio.gather(*parsed_task)
     #raw_results = parse_multiple_pages(html_contents, product_links)
     print("__" * 30)
     
