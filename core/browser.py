@@ -12,6 +12,7 @@ async def render_page_html(
     *,
     wait_seconds: float = 2.0,
     timeout_ms: int = 30000,
+    user_agent: Optional[str] = None,
 ) -> str:
     """Render a page in a headless browser for JavaScript-heavy storefronts."""
     if async_playwright is None:
@@ -20,7 +21,7 @@ async def render_page_html(
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
         try:
-            page = await browser.new_page()
+            page = await browser.new_page(user_agent=user_agent)
             await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
             if wait_seconds > 0:
                 await page.wait_for_timeout(int(wait_seconds * 1000))
@@ -35,6 +36,7 @@ async def fetch_rendered_pages(
     wait_seconds: float = 2.0,
     timeout_ms: int = 30000,
     max_concurrency: int = 3,
+    user_agent: Optional[str] = None,
 ) -> List[str]:
     """Fetch HTML for JS-heavy pages while limiting concurrency."""
     url_list = list(dict.fromkeys(url.strip() for url in urls if url and url.strip()))
@@ -46,7 +48,12 @@ async def fetch_rendered_pages(
     async def fetch_one(url: str) -> str:
         async with semaphore:
             try:
-                return await render_page_html(url, wait_seconds=wait_seconds, timeout_ms=timeout_ms)
+                return await render_page_html(
+                    url,
+                    wait_seconds=wait_seconds,
+                    timeout_ms=timeout_ms,
+                    user_agent=user_agent,
+                )
             except Exception as exc:  # pragma: no cover - runtime environment only
                 print(f"Error rendering {url}: {exc}")
                 return ""

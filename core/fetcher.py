@@ -81,6 +81,7 @@ async def fetch_all(
             wait_seconds=wait_seconds,
             timeout_ms=timeout * 1000,
             max_concurrency=max(1, min(max_concurrency, 3)),
+            user_agent=user_agent or DEFAULT_USER_AGENT,
         )
 
     semaphore = asyncio.Semaphore(max_concurrency)
@@ -97,4 +98,3 @@ async def fetch_all(
             for url in url_list
         ]
         return await asyncio.gather(*tasks)
-
