@@ -1,33 +1,27 @@
 import asyncio
+import logging
+from importlib import import_module
 from typing import Iterable, List, Optional
 
 try:
-    from playwright.async_api import async_playwright
-except ImportError:  # pragma: no cover - optional dependency
+    _playwright_async_api = import_module("playwright.async_api")
+    PlaywrightTimeoutError = _playwright_async_api.TimeoutError
+    async_playwright = _playwright_async_api.async_playwright
+except ImportError:  # optional dependency
     async_playwright = None
+    PlaywrightTimeoutError = asyncio.TimeoutError
+
+logger = logging.getLogger("scraper.browser")
+
+BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
+NETWORK_IDLE_CAP_MS = 10_000
 
 
-async def render_page_html(
-    url: str,
-    *,
-    wait_seconds: float = 2.0,
-    timeout_ms: int = 30000,
-    user_agent: Optional[str] = None,
-) -> str:
-    """Render a page in a headless browser for JavaScript-heavy storefronts."""
-    if async_playwright is None:
-        raise RuntimeError("playwright is not installed. Install it with pip install playwright and python -m playwright install chromium.")
-
-    async with async_playwright() as playwright:
-        browser = await playwright.chromium.launch(headless=True)
-        try:
-            page = await browser.new_page(user_agent=user_agent)
-            await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-            if wait_seconds > 0:
-                await page.wait_for_timeout(int(wait_seconds * 1000))
-            return await page.content()
-        finally:
-            await browser.close()
+async def _block_heavy_resources(route) -> None:
+    if route.request.resource_type in BLOCKED_RESOURCE_TYPES:
+        await route.abort()
+    else:
+        await route.continue_()
 
 
 async def fetch_rendered_pages(
@@ -38,24 +32,63 @@ async def fetch_rendered_pages(
     max_concurrency: int = 3,
     user_agent: Optional[str] = None,
 ) -> List[str]:
-    """Fetch HTML for JS-heavy pages while limiting concurrency."""
+    """Render pages in ONE shared headless Chromium, limiting concurrent tabs."""
+    if async_playwright is None:
+        raise RuntimeError(
+            "playwright is not installed. Install it with "
+            "`pip install playwright` and `python -m playwright install chromium`."
+        )
+
     url_list = list(dict.fromkeys(url.strip() for url in urls if url and url.strip()))
     if not url_list:
         return []
 
-    semaphore = asyncio.Semaphore(max_concurrency)
+    semaphore = asyncio.Semaphore(max(1, max_concurrency))
 
-    async def fetch_one(url: str) -> str:
-        async with semaphore:
-            try:
-                return await render_page_html(
-                    url,
-                    wait_seconds=wait_seconds,
-                    timeout_ms=timeout_ms,
-                    user_agent=user_agent,
-                )
-            except Exception as exc:  # pragma: no cover - runtime environment only
-                print(f"Error rendering {url}: {exc}")
-                return ""
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(headless=True)
+        try:
+            context = await browser.new_context(user_agent=user_agent)
+            await context.route("**/*", _block_heavy_resources)
 
-    return await asyncio.gather(*(fetch_one(url) for url in url_list))
+            async def fetch_one(url: str) -> str:
+                async with semaphore:
+                    page = await context.new_page()
+                    try:
+                        await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                        try:
+                            await page.wait_for_load_state(
+                                "networkidle", timeout=min(timeout_ms, NETWORK_IDLE_CAP_MS)
+                            )
+                        except PlaywrightTimeoutError:
+                            pass  # long-polling pages never go idle; use what has rendered
+                        if wait_seconds > 0:
+                            await page.wait_for_timeout(int(wait_seconds * 1000))
+                        return await page.content()
+                    except Exception as exc:
+                        logger.warning("Error rendering %s: %s", url, exc)
+                        return ""
+                    finally:
+                        await page.close()
+
+            return list(await asyncio.gather(*(fetch_one(url) for url in url_list)))
+        finally:
+            await browser.close()
+
+
+async def render_page_html(
+    url: str,
+    *,
+    wait_seconds: float = 2.0,
+    timeout_ms: int = 30000,
+    user_agent: Optional[str] = None,
+) -> str:
+    """Render a single page; kept for backward compatibility."""
+    pages = await fetch_rendered_pages(
+        [url],
+        wait_seconds=wait_seconds,
+        timeout_ms=timeout_ms,
+        max_concurrency=1,
+        user_agent=user_agent,
+    )
+    return pages[0] if pages else ""

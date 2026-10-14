@@ -1,6 +1,6 @@
-# Import some important libraries
 import os
 from datetime import datetime
+from pathlib import Path
 
 from dotenv import load_dotenv
 from sqlalchemy import ForeignKey, func
@@ -9,19 +9,25 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./data/database.db")
+# Anchor the default database to the project (<root>/data/database.db), not the current
+# working directory. dashboard.py reads the same file, so both sides always agree
+# no matter where the scraper is launched from.
+DATA_DIR = Path(__file__).resolve().parents[1]  # <root>/data
+DEFAULT_DB_PATH = DATA_DIR / "database.db"
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite+aiosqlite:///{DEFAULT_DB_PATH.as_posix()}")
 
-#Load the database
+if DATABASE_URL.startswith("sqlite"):
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-#engine = create_async_engine(DATABASE_URL, echo=True, pool_size=20, max_overflow=10, pool_timeout=30)
-engine = create_async_engine(DATABASE_URL, echo=True)
+# SQL logging is opt-in (SQL_ECHO=1). echo=True prints every statement and duplicates
+# lines once logging.basicConfig is configured.
+engine = create_async_engine(DATABASE_URL, echo=os.getenv("SQL_ECHO", "0") == "1")
 
-# Define the base class for our models
+
 class Base(DeclarativeBase):
-    pass 
+    pass
 
 
-# Define the table
 class Product(Base):
     __tablename__ = "products"
 
@@ -46,15 +52,10 @@ class ProductPriceHistory(Base):
     product: Mapped[Product] = relationship(back_populates="price_history")
 
 
-# Setting up the database connection
-# DATABASE_URL = "sqlite+aiosqlite:///./data/database.db"
-# engine = create_async_engine(DATABASE_URL, echo=True)
-
-# Create a session maker
 AsyncSessionLocal = async_sessionmaker(bind=engine, expire_on_commit=False)
 
 
-# Function to create the database tables
-async def init_db():
+async def init_db() -> None:
+    """Create the tables if they do not exist yet."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

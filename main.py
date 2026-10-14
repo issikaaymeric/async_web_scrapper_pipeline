@@ -1,8 +1,9 @@
 import argparse
 import asyncio
+import logging
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import quote_plus
 
 from sqlalchemy import select
@@ -10,12 +11,21 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_upsert
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from core.crawler import crawl_site
-from data.models.database import AsyncSessionLocal, Product, ProductPriceHistory, init_db
+from core.crawler import CrawlResult, crawl_site
+from data.models.database import AsyncSessionLocal, Product, ProductPriceHistory, engine, init_db
 from utils.processor import clean_scraped_data, export_scraped_data
 
 
-DEFAULT_BASE_URL = "https://www.amazon.com/s?k={query}"
+# books.toscrape.com is a sandbox built for scraping practice. Large retailers (Amazon etc.)
+# block automated clients and restrict them in their terms, so they are a poor default.
+DEFAULT_BASE_URL = "https://books.toscrape.com"
+REFRESHABLE_COLUMNS = ("title", "price", "rating", "image_url")
+INSERT_CHUNK_SIZE = 100  # keeps each INSERT under SQLite's bound-variable limit
+
+
+def utc_now() -> datetime:
+    """Naive UTC timestamp (what SQLite/pandas expect), without the deprecated utcnow()."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 async def record_price_history(product_rows: list[dict]) -> int:
@@ -46,7 +56,7 @@ async def record_price_history(product_rows: list[dict]) -> int:
                 ProductPriceHistory(
                     product_id=product.id,
                     price=float(price),
-                    captured_at=datetime.utcnow(),
+                    captured_at=utc_now(),
                 )
             )
             inserted += 1
@@ -54,6 +64,34 @@ async def record_price_history(product_rows: list[dict]) -> int:
         await session.commit()
 
     return inserted
+
+
+async def save_products(rows: list[dict]) -> None:
+    """Insert new products; refresh title/price/rating/image of ones already stored."""
+    refresh = [column for column in REFRESHABLE_COLUMNS if column in rows[0]]
+    async with AsyncSessionLocal() as session:
+        for start in range(0, len(rows), INSERT_CHUNK_SIZE):
+            stmt = sqlite_upsert(Product).values(rows[start : start + INSERT_CHUNK_SIZE])
+            if refresh:
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["url"],
+                    set_={column: stmt.excluded[column] for column in refresh},
+                )
+            else:
+                stmt = stmt.on_conflict_do_nothing(index_elements=["url"])
+            await session.execute(stmt)
+        await session.commit()
+
+
+def explain_empty_crawl(result: CrawlResult) -> str:
+    if result.pages_visited == 0:
+        return "Nothing was fetched: robots.txt refused the crawl or could not be read (see warnings above)."
+    if result.pages_failed == result.pages_visited:
+        return "Every request failed: network/SSL problem or the site is blocking bots (see warnings above)."
+    return (
+        "Pages loaded but none looked like a product page. If the site renders prices with "
+        "JavaScript, retry with --render-js; otherwise it needs site-specific selectors."
+    )
 
 
 def build_search_url(query: str, base_url: str = DEFAULT_BASE_URL) -> str:
@@ -104,12 +142,14 @@ async def run_pipeline(
         wait_seconds=wait_seconds,
     )
     print(
-        f"Visited {crawl_result.pages_visited} pages and found "
-        f"{len(crawl_result.products)} product candidates."
+        f"Visited {crawl_result.pages_visited} pages "
+        f"({crawl_result.pages_failed} failed, {crawl_result.pages_without_product} not products) "
+        f"and found {len(crawl_result.products)} product candidates."
     )
     clean_results = clean_scraped_data(crawl_result.products)
     if not clean_results:
         print("No products with both a title and a positive price were found.")
+        print(explain_empty_crawl(crawl_result))
         return
 
     if output_format in {"csv", "json"}:
@@ -117,11 +157,7 @@ async def run_pipeline(
         print(f"Exported {len(clean_results)} products to {exported_path}")
 
     print(f"Saving {len(clean_results)} products to database...")
-    async with AsyncSessionLocal() as session:
-        stmt = sqlite_upsert(Product).values(clean_results)
-        stmt = stmt.on_conflict_do_nothing(index_elements=["url"])
-        await session.execute(stmt)
-        await session.commit()
+    await save_products(clean_results)
 
     tracked = await record_price_history(clean_results)
     print(f"Recorded {tracked} price change snapshots in the history table.")
@@ -131,17 +167,17 @@ async def run_pipeline(
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Async product scraper and data pipeline")
-    parser.add_argument("--query", default="headphones", help="Search query used to build the listing URL.")
+    parser.add_argument("--query", default="headphones", help="Search term; only used when --base-url contains {query}.")
     parser.add_argument(
         "--base-url",
         default=DEFAULT_BASE_URL,
-        help="Listing/category URL to scrape. Supports {query}; use a site's product listing URL.",
+        help="Listing/category URL to start from. Supports {query}; use a site's product listing URL.",
     )
     parser.add_argument("--max-products", type=nonnegative_int, default=10, help="Maximum products to save; 0 uses the page limit.")
     parser.add_argument("--max-concurrency", type=positive_int, default=10, help="Maximum concurrent fetches.")
-    parser.add_argument("--crawl-depth", type=nonnegative_int, default=2, help="Maximum number of internal-link levels to follow.")
+    parser.add_argument("--crawl-depth", type=nonnegative_int, default=2, help="Maximum link depth; products need at least 1.")
     parser.add_argument("--max-pages", type=positive_int, default=100, help="Maximum same-site pages to visit per run.")
-    parser.add_argument("--output", choices=["db", "csv", "json"], default="db", help="Where to write extracted data.")
+    parser.add_argument("--output", choices=["db", "csv", "json"], default="db", help="Also export to csv/json (the database is always written).")
     parser.add_argument("--output-dir", default="data", help="Directory used for CSV/JSON export.")
     parser.add_argument("--user-agent", default=None, help="Custom browser string for requests.")
     parser.add_argument("--render-js", action="store_true", help="Use Playwright headless browser for JavaScript-heavy pages.")
@@ -149,12 +185,10 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-if __name__ == "__main__":
-    args = parse_arguments()
-    url = build_search_url(args.query, args.base_url)
-    asyncio.run(
-        run_pipeline(
-            base_url=url,
+async def main(args: argparse.Namespace) -> None:
+    try:
+        await run_pipeline(
+            base_url=build_search_url(args.query, args.base_url),
             max_products=args.max_products,
             max_concurrency=args.max_concurrency,
             output_format=args.output,
@@ -165,4 +199,10 @@ if __name__ == "__main__":
             crawl_depth=args.crawl_depth,
             max_pages=args.max_pages,
         )
-    )
+    finally:
+        await engine.dispose()  # close aiosqlite worker threads before the loop shuts down
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    asyncio.run(main(parse_arguments()))

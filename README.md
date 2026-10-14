@@ -1,117 +1,164 @@
-﻿# async_web_scrapper_pipeline
+﻿# Async Web Scraper & Data Pipeline
 
-# 🕷️ Async Web Scraper & Data Pipeline
+A configurable product scraper with async fetching, optional headless-browser rendering, structured-data extraction, a robots-aware crawler, CSV/JSON export, SQLite persistence with price history, and a Streamlit dashboard.
 
-This project includes a configurable product scraper that can be pointed at many storefronts, with async fetching, browser rendering, structured-data extraction, export support, and a dashboard.
+The default target is [books.toscrape.com](https://books.toscrape.com), a sandbox built for scraping practice. Large retailers block automated clients and restrict them in their terms, so test against sites you are allowed to scrape.
 
 ---
 
-## What was improved
+## Features
 
-- Added resilient async fetching with retries and concurrency limits
-- Added CLI options for query, max products, concurrency, and export format
-- Improved HTML parsing to read Schema.org Product JSON-LD, Open Graph, microdata, and common storefront markup
-- Added same-site product-link discovery from product URL patterns and product-card markup
-- Added support for scraping a direct product page when the page has no product links
-- Added bounded, same-site recursive crawling with depth, page, and concurrency controls
-- Added robots.txt checks, including crawl-delay handling
-- Added data cleaning utilities that strip invalid rows and deduplicate URLs
-- Added CSV/JSON export support alongside database persistence
-- Added historical price tracking so the project records price changes over time
-- Added a price history dashboard section to monitor product-level trends
-- Added unit tests for parsing and cleaning logic
+- Async fetching with retries (429/5xx only, `Retry-After` honored) and a concurrency limit
+- Best-first, same-host crawler with page, depth, and concurrency limits
+- `robots.txt` checks, including crawl-delay handling
+- Extraction from Schema.org Product JSON-LD, Open Graph, microdata, CSS-class star ratings, and common storefront markup
+- Optional Playwright rendering for JavaScript-heavy storefronts
+- Cleaning step that drops invalid rows and deduplicates by URL
+- SQLite persistence: new products are inserted, existing ones get their price, title, rating, and image refreshed
+- Price history table with one row per price change
+- Streamlit dashboard: filters, KPIs, price trends, deal alerts, catalog view, CSV/Excel download
+- CSV/JSON export alongside the database
+- Unit tests for parsing and cleaning logic
 
 ---
 
 ## Architecture
 
-```text
-main.py
-├── fetch_all() -> async HTTP fetch with retry + concurrency control
-├── extract_product_links() -> discover storefront/product URLs
-├── parse_product_html() -> metadata-aware parsing with fallback selectors
-├── clean_scraped_data() -> pandas validation + deduplication
-├── export_scraped_data() -> optional CSV/JSON export
-└── upsert to SQLite -> avoids duplicates using url uniqueness
+```mermaid
+flowchart LR
+    CLI["main.py"] --> CRAWL["crawl_site"]
+    CRAWL --> ROBOTS["robots.txt policy"]
+    CRAWL --> FETCH["fetch_all (aiohttp or Playwright)"]
+    CRAWL --> PARSE["parse_product_html / extract_links"]
+    CRAWL --> CLEAN["clean_scraped_data"]
+    CLEAN --> EXPORT["export_scraped_data (CSV / JSON)"]
+    CLEAN --> DB[("SQLite: products + price history")]
+    DB --> DASH["dashboard.py"]
 ```
+
+| Path | Responsibility |
+|---|---|
+| `main.py` | CLI entry point and pipeline orchestration |
+| `core/crawler.py` | robots policy, best-first crawl, crawl diagnostics |
+| `core/fetcher.py` | HTTP fetching, retries, TLS, aligned results |
+| `core/browser.py` | Playwright rendering with one shared browser |
+| `core/parser.py` | Product parsing and link classification |
+| `utils/processor.py` | Cleaning, deduplication, CSV/JSON export |
+| `data/models/database.py` | SQLAlchemy models and engine |
+| `dashboard.py` | Streamlit dashboard |
 
 ---
 
-## Running the pipeline
-
-Install dependencies:
+## Quick start
 
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+pip install certifi
 ```
 
-Run a search with defaults:
+`certifi` gives Python a reliable CA bundle for HTTPS (fixes certificate errors on Windows and macOS). Optional extras: `brotli` (brotli-compressed responses), `openpyxl` (dashboard Excel export), `playwright` (JavaScript rendering).
+
+Scrape the default sandbox site, then open the dashboard:
 
 ```bash
-python main.py --query headphones --max-products 10
+python main.py --max-products 50 --max-pages 80
+streamlit run dashboard.py
 ```
 
-To try another storefront, provide its product category, search-results, or product URL. The crawler follows internal links from that starting point:
+---
+
+## Usage
+
+Start from any listing, category, search-results, or product URL on the site you want:
 
 ```bash
 python main.py --base-url "https://shop.example/category/cameras" --max-products 20 --max-pages 100 --crawl-depth 2 --max-concurrency 5 --output csv
 ```
 
-For sites whose search URL accepts a query, use the `{query}` placeholder:
+If a site's search URL accepts a query, use the `{query}` placeholder (`--query` is only used in this case):
 
 ```bash
 python main.py --query cameras --base-url "https://shop.example/search?q={query}" --max-products 20
 ```
 
-For JavaScript-heavy storefronts, use a headless browser:
+For JavaScript-heavy storefronts, render pages in a headless browser:
 
 ```bash
 pip install playwright
 python -m playwright install chromium
-python main.py --query headphones --max-products 10 --render-js --wait-seconds 3
+python main.py --base-url "https://shop.example/category/cameras" --max-products 10 --render-js --wait-seconds 3
 ```
 
-Open the Streamlit dashboard:
+### Options
+
+| Option | Default | Description |
+|---|---|---|
+| `--base-url` | `https://books.toscrape.com` | Start URL; supports `{query}` |
+| `--query` | `headphones` | Search term, used only when `--base-url` contains `{query}` |
+| `--max-products` | `10` | Maximum products to save; `0` uses the page limit |
+| `--max-pages` | `100` | Maximum pages visited per run |
+| `--crawl-depth` | `2` | Link levels to follow; products need at least `1` |
+| `--max-concurrency` | `10` | Maximum concurrent requests |
+| `--output` | `db` | `db`, `csv`, or `json`; the database is always written, csv/json add an export |
+| `--output-dir` | `data` | Folder for exported files |
+| `--user-agent` | built-in | Custom User-Agent string; an honest one such as `MyScraper/1.0 (+you@example.com)` is recommended |
+| `--render-js` | off | Render pages with Playwright |
+| `--wait-seconds` | `2.0` | Extra wait after load for rendered pages |
+
+### Environment variables (`.env`)
+
+| Variable | Purpose |
+|---|---|
+| `USER_AGENT` | Default User-Agent string |
+| `DATABASE_URL` | Overrides the SQLite location. The dashboard reads `data/database.db`, so change `DB_PATH` in `dashboard.py` too if you set this |
+| `SQL_ECHO` | Set to `1` to log every SQL statement |
+
+---
+
+## How crawling works
+
+1. The crawler loads `robots.txt` once. A missing file (404/410) allows everything. A `401`, `403`, `429`, or `5xx` response, or an unreachable server, stops the crawl.
+2. Pages are fetched best-first: product links, then pagination ("next page") links, then everything else.
+3. Pagination stays at the same depth, so `--crawl-depth 1` means "every listing page plus the products they link to".
+4. A page is recorded only if a parent page linked it as a product, or the page declares itself a product (JSON-LD, `og:type`, price meta or `itemprop`). Start pages, listings, and info pages are never recorded.
+5. The crawler stays on the starting host (`example.com` and `www.example.com` count as the same site), skips assets and `nofollow` links, and strips tracking parameters from URLs.
+
+---
+
+## Data storage
+
+- The default database is `<project>/data/database.db`, resolved from the project folder, so the scraper and dashboard use the same file wherever you launch them from.
+- `products` has a unique `url`. Re-running the pipeline inserts new products and refreshes the title, price, rating, and image of existing ones.
+- `product_price_history` gets one row each time a product's price changes, which feeds the dashboard's trend charts.
+- CSV/JSON exports are written to `data/products.csv` or `data/products.json` and overwritten on each run.
+- The dashboard reads the database first and falls back to `data/products.csv` when the database is empty. The CSV has no `created_at` or price history.
+
+---
+
+## Dashboard
 
 ```bash
 streamlit run dashboard.py
 ```
 
-Advanced usage:
-
-```bash
-python main.py --query headphones --max-products 20 --max-concurrency 15 --output csv --output-dir data --render-js --wait-seconds 3
-```
-
-Available options:
-
-- `--query`: search term used to build the listing URL
-- `--base-url`: custom product listing URL; supports `{query}` placeholder
-- `--max-products`: maximum products to save; `0` uses the page limit
-- `--max-pages`: cap the number of same-site pages visited per run
-- `--crawl-depth`: number of internal-link levels to follow from the start URL
-- `--max-concurrency`: maximum concurrent requests
-- `--output`: `db`, `csv`, or `json`
-- `--output-dir`: folder used for exported data
-- `--user-agent`: custom browser user-agent string
-
-The crawler stays on the starting hostname, obeys its `robots.txt`, and stops at the configured page, depth, and product limits. The generic extractor works best on storefronts that publish Schema.org Product JSON-LD, Open Graph/product metadata, microdata, or recognizable product-card markup. No generic scraper can reliably extract every site: some sites use custom markup, require login, block automated access, or load data through site-specific APIs. Use site-specific selectors/adapters for those cases. It does not bypass authentication, paywalls, CAPTCHAs, or access controls.
+Tabs: overview charts, price trends, deal alerts, and a table/card catalog with CSV and Excel download. The sidebar shows the data source and the last scrape time.
 
 ---
 
-## Database setup
+## Troubleshooting
 
-The default SQLite connection is configured in `data/models/database.py` and uses the `products` table with a unique `url` constraint. Re-running the pipeline safely ignores duplicates.
+Run `main.py` from a terminal. The crawl summary and warnings are printed as they happen.
 
-The scraper now also records a `product_price_history` table with one row per price snapshot, which lets the dashboard chart historical price changes and show price deltas for each product over time.
-
----
-
-## Example export
-
-CSV export is saved to `data/products.csv` or JSON to `data/products.json` when `--output` is set to `csv` or `json`.
+| Symptom | Likely cause |
+|---|---|
+| `robots.txt returned HTTP 403/429` | The site is blocking bots or rate-limiting you. Use an official API or ask for permission; do not work around it |
+| `Every request failed` | Network or TLS problem. Run `pip install certifi`, then check the warnings above the summary |
+| Pages visited, `0 products` | The site renders prices with JavaScript (add `--render-js`), or it needs site-specific selectors |
+| Only the start page is visited | Raise `--crawl-depth` to at least `1` and `--max-pages` to cover the catalog (each listing page costs one page and yields about 20 products on the sample site) |
+| Dashboard shows old or no data | It is reading the CSV fallback, or `DATABASE_URL` points elsewhere. Delete `data/database.db` and `data/products.csv`, then re-run the scraper |
+| `playwright is not installed` or a missing-browser error | `pip install playwright`, then `python -m playwright install chromium` |
 
 ---
 
@@ -123,6 +170,8 @@ python -m unittest discover -s tests -v
 
 ---
 
-## Notes
+## Limitations and responsible use
 
-This project is designed as a solid foundation for e-commerce scraping and can be extended with JavaScript-rendered pages, scheduling, persistence to Postgres, or a dashboard layer.
+No generic scraper can extract every site: some use custom markup, require login, block automated access, or load data through private APIs. Use site-specific selectors or adapters for those cases. The crawler does not bypass authentication, paywalls, CAPTCHAs, or access controls.
+
+Only scrape sites you are permitted to, respect `robots.txt` and the site's terms, keep concurrency modest, and identify your scraper honestly.

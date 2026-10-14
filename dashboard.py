@@ -7,16 +7,35 @@ import sqlite3
 from io import BytesIO
 from pathlib import Path
 
-import altair as alt
+import altair as alt # type: ignore
 import pandas as pd
-import streamlit as st
+import streamlit as st # type: ignore
 
 ROOT_DIR = Path(__file__).resolve().parent
 DB_PATH = ROOT_DIR / "data" / "database.db"
 CSV_PATH = ROOT_DIR / "data" / "products.csv"
 EXPECTED_COLUMNS = ["id", "title", "price", "rating", "image_url", "url", "created_at"]
 
-st.set_page_config(page_title="Scrape Dashboard", page_icon="📊", layout="wide")
+# Material Symbols (https://fonts.google.com/icons). Centralised so they are easy to swap.
+ICON = {
+    "app": ":material/travel_explore:",
+    "refresh": ":material/refresh:",
+    "filters": ":material/filter_alt:",
+    "reset": ":material/restart_alt:",
+    "alerts": ":material/notifications_active:",
+    "overview": ":material/bar_chart:",
+    "trends": ":material/show_chart:",
+    "deals": ":material/local_offer:",
+    "catalog": ":material/storefront:",
+    "image_missing": ":material/hide_image:",
+    "rating": ":material/star:",
+    "open": ":material/open_in_new:",
+    "download": ":material/download:",
+    "source": ":material/database:",
+    "clock": ":material/schedule:",
+}
+
+st.set_page_config(page_title="Scrape Dashboard", page_icon=ICON["app"], layout="wide")
 
 # --- Streamlit version compatibility (use_container_width -> width="stretch") ---
 try:
@@ -152,9 +171,9 @@ PRODUCT_COLUMNS = {
 # Header + load
 # ----------------------------------------------------------------------------
 head_left, head_right = st.columns([5, 1], vertical_alignment="center")
-head_left.title("🕷️ Scrape Dashboard")
+head_left.title(f"{ICON['app']} Scrape Dashboard")
 head_left.caption("Monitor product inventory gathered by the async scraper")
-if head_right.button("🔄 Refresh data", **STRETCH):
+if head_right.button("Refresh data", icon=ICON["refresh"], **STRETCH):
     st.cache_data.clear()
     st.rerun()
 
@@ -173,7 +192,7 @@ all_df = clean_products(raw_df)
 # Sidebar filters
 # ----------------------------------------------------------------------------
 with st.sidebar:
-    st.header("Filters")
+    st.header(f"{ICON['filters']} Filters")
     search = st.text_input("Search title", key="f_search")
     selected_brands = st.multiselect("Brands", sorted(all_df["brand"].unique()), key="f_brands")
 
@@ -195,17 +214,17 @@ with st.sidebar:
     )
     sort_label = st.selectbox("Sort by", list(SORTS), key="f_sort")
 
-    with st.expander("Deal alert settings"):
+    with st.expander(f"{ICON['alerts']} Deal alert settings"):
         alert_price_limit = st.number_input("Price ceiling ($)", min_value=0.0, value=75.0, step=5.0, key="f_alert_price")
         min_alert_rating = st.slider("Minimum rating", 0.0, 5.0, 4.0, 0.1, key="f_alert_rating")
 
-    st.button("Reset filters", on_click=reset_filters, **STRETCH)
+    st.button("Reset filters", icon=ICON["reset"], on_click=reset_filters, **STRETCH)
 
     st.markdown("---")
-    st.caption(f"Source: {source}")
+    st.caption(f"{ICON['source']} Source: {source}")
     last_scrape = all_df["created_at"].max()
     if pd.notna(last_scrape):
-        st.caption(f"Last scrape: {last_scrape:%Y-%m-%d %H:%M}")
+        st.caption(f"{ICON['clock']} Last scrape: {last_scrape:%Y-%m-%d %H:%M}")
 
 # ----------------------------------------------------------------------------
 # Apply filters
@@ -241,7 +260,14 @@ k3.metric("Median price", money(filtered["price"].median()))
 k4.metric("Lowest price", money(filtered["price"].min()))
 k5.metric("Average rating", f"{filtered['rating'].mean():.2f}" if filtered["rating"].notna().any() else "N/A")
 
-tab_overview, tab_trends, tab_deals, tab_catalog = st.tabs(["📈 Overview", "🕒 Price trends", "🔥 Deals", "🛍️ Catalog"])
+tab_overview, tab_trends, tab_deals, tab_catalog = st.tabs(
+    [
+        f"{ICON['overview']} Overview",
+        f"{ICON['trends']} Price trends",
+        f"{ICON['deals']} Deals",
+        f"{ICON['catalog']} Catalog",
+    ]
+)
 
 # ----------------------------------------------------------------------------
 # Overview
@@ -411,16 +437,16 @@ with tab_catalog:
                         try:
                             st.image(row["image_url"], **STRETCH)
                         except Exception:
-                            st.caption("🖼️ Image unavailable")
+                            st.caption(f"{ICON['image_missing']} Image unavailable")
                     else:
-                        st.caption("🖼️ No image")
+                        st.caption(f"{ICON['image_missing']} No image")
                     st.markdown(f"**{row['title'][:60]}**")
                     rating_text = f"{row['rating']:.1f}" if pd.notna(row["rating"]) else "N/A"
-                    st.write(f"{row['brand']} · **{money(row['price'])}** · ⭐ {rating_text}")
+                    st.write(f"{row['brand']} · **{money(row['price'])}** · {ICON['rating']} {rating_text}")
                     if pd.notna(row["created_at"]):
                         st.caption(row["created_at"].strftime("%Y-%m-%d %H:%M"))
                     if row["url"]:
-                        st.link_button("Open product", row["url"])
+                        st.link_button("Open product", row["url"], icon=ICON["open"])
         if pages > 1:
             st.caption(f"Page {page} of {pages}")
     else:
@@ -438,6 +464,7 @@ with tab_catalog:
         export_df.to_csv(index=False).encode("utf-8"),
         file_name="scraped_products.csv",
         mime="text/csv",
+        icon=ICON["download"],
         **STRETCH,
     )
     try:
@@ -448,6 +475,7 @@ with tab_catalog:
             buffer.getvalue(),
             file_name="scraped_products.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            icon=ICON["download"],
             **STRETCH,
         )
     except Exception:
