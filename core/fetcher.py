@@ -34,16 +34,15 @@ def make_ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
-def build_headers(user_agent: Optional[str] = None) -> dict:
+def build_headers(user_agent: Optional[str] = None, accept_language: Optional[str] = None) -> dict:
     # Accept-Encoding is intentionally NOT set: aiohttp advertises only the codecs it can
     # decode. Forcing "br" without the Brotli package makes responses undecodable.
     return {
         "User-Agent": user_agent or DEFAULT_USER_AGENT,
-        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Language": accept_language or "en-US,en;q=0.9",
         "Referer": "https://www.google.com",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     }
-
 
 def _retry_delay(response: aiohttp.ClientResponse, attempt: int) -> float:
     retry_after = response.headers.get("Retry-After", "")
@@ -60,9 +59,10 @@ async def fetch_page(
     timeout: int = 20,
     retries: int = 3,
     user_agent: Optional[str] = None,
+    accept_language: Optional[str] = None,
 ) -> str:
     """Fetch one URL. Retries only transient failures; returns "" on permanent failure."""
-    headers = build_headers(user_agent)
+    headers = build_headers(user_agent, accept_language)
     request_timeout = aiohttp.ClientTimeout(total=timeout)
     last_error = "unknown error"
 
@@ -98,6 +98,8 @@ async def fetch_all(
     user_agent: Optional[str] = None,
     use_rendered_browser: bool = False,
     wait_seconds: float = 2.0,
+    accept_language: Optional[str] = None,
+    locale: Optional[str] = None,
 ) -> List[str]:
     """Fetch URLs concurrently. The result is index-aligned with `urls` ("" for blank/failed)."""
     cleaned = [url.strip() if url else "" for url in urls]
@@ -112,6 +114,8 @@ async def fetch_all(
             timeout_ms=timeout * 1000,
             max_concurrency=max(1, min(max_concurrency, 3)),
             user_agent=user_agent or DEFAULT_USER_AGENT,
+            locale=locale,
+            accept_language=accept_language,
         )
     else:
         semaphore = asyncio.Semaphore(max_concurrency)
@@ -126,6 +130,7 @@ async def fetch_all(
                         timeout=timeout,
                         retries=retries,
                         user_agent=user_agent,
+                        accept_language=accept_language,
                     )
                     for url in unique
                 )

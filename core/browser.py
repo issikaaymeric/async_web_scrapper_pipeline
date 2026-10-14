@@ -31,6 +31,8 @@ async def fetch_rendered_pages(
     timeout_ms: int = 30000,
     max_concurrency: int = 3,
     user_agent: Optional[str] = None,
+    locale: Optional[str] = None,
+    accept_language: Optional[str] = None,
 ) -> List[str]:
     """Render pages in ONE shared headless Chromium, limiting concurrent tabs."""
     if async_playwright is None:
@@ -45,10 +47,18 @@ async def fetch_rendered_pages(
 
     semaphore = asyncio.Semaphore(max(1, max_concurrency))
 
+    # Playwright has no `accept_language` argument: the language is set through
+    # `locale` (navigator.language + Accept-Language) and, optionally, extra headers.
+    context_options: dict = {"user_agent": user_agent}
+    if locale:
+        context_options["locale"] = locale
+    if accept_language:
+        context_options["extra_http_headers"] = {"Accept-Language": accept_language}
+
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(headless=True)
         try:
-            context = await browser.new_context(user_agent=user_agent)
+            context = await browser.new_context(**context_options)
             await context.route("**/*", _block_heavy_resources)
 
             async def fetch_one(url: str) -> str:
@@ -82,6 +92,8 @@ async def render_page_html(
     wait_seconds: float = 2.0,
     timeout_ms: int = 30000,
     user_agent: Optional[str] = None,
+    locale: Optional[str] = None,
+    accept_language: Optional[str] = None,
 ) -> str:
     """Render a single page; kept for backward compatibility."""
     pages = await fetch_rendered_pages(
@@ -90,5 +102,7 @@ async def render_page_html(
         timeout_ms=timeout_ms,
         max_concurrency=1,
         user_agent=user_agent,
+        locale=locale,
+        accept_language=accept_language,
     )
     return pages[0] if pages else ""

@@ -12,6 +12,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_upsert
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from core.crawler import CrawlResult, crawl_site
+from core.regions import REGIONS, get_region
 from data.models.database import AsyncSessionLocal, Product, ProductPriceHistory, engine, init_db
 from utils.processor import clean_scraped_data, export_scraped_data
 
@@ -19,7 +20,9 @@ from utils.processor import clean_scraped_data, export_scraped_data
 # books.toscrape.com is a sandbox built for scraping practice. Large retailers (Amazon etc.)
 # block automated clients and restrict them in their terms, so they are a poor default.
 DEFAULT_BASE_URL = "https://books.toscrape.com"
-REFRESHABLE_COLUMNS = ("title", "price", "rating", "image_url")
+# "currency" is refreshed too, so old rows (migrated with the USD default) get corrected
+# the next time the product is scraped.
+REFRESHABLE_COLUMNS = ("title", "price", "currency", "rating", "image_url")
 INSERT_CHUNK_SIZE = 100  # keeps each INSERT under SQLite's bound-variable limit
 
 
@@ -37,6 +40,7 @@ async def record_price_history(product_rows: list[dict]) -> int:
         for row in product_rows:
             url = row.get("url")
             price = row.get("price")
+            currency = row.get("currency") or "USD"
             if not url or price is None:
                 continue
 
@@ -49,13 +53,19 @@ async def record_price_history(product_rows: list[dict]) -> int:
                 .where(ProductPriceHistory.product_id == product.id)
                 .order_by(ProductPriceHistory.captured_at.desc())
             )
-            if latest_snapshot is not None and abs(float(latest_snapshot.price) - float(price)) <= 0.01:
+            # Skip only if both the price AND the currency are unchanged.
+            if (
+                latest_snapshot is not None
+                and latest_snapshot.currency == currency
+                and abs(float(latest_snapshot.price) - float(price)) <= 0.01
+            ):
                 continue
 
             session.add(
                 ProductPriceHistory(
                     product_id=product.id,
                     price=float(price),
+                    currency=currency,
                     captured_at=utc_now(),
                 )
             )
@@ -67,7 +77,7 @@ async def record_price_history(product_rows: list[dict]) -> int:
 
 
 async def save_products(rows: list[dict]) -> None:
-    """Insert new products; refresh title/price/rating/image of ones already stored."""
+    """Insert new products; refresh title/price/currency/rating/image of ones already stored."""
     refresh = [column for column in REFRESHABLE_COLUMNS if column in rows[0]]
     async with AsyncSessionLocal() as session:
         for start in range(0, len(rows), INSERT_CHUNK_SIZE):
@@ -125,8 +135,13 @@ async def run_pipeline(
     wait_seconds: float = 2.0,
     crawl_depth: int = 2,
     max_pages: int = 100,
+    region_code: str = "",
 ):
     await init_db()
+
+    region = get_region(region_code)
+    if region:
+        print(f"Region: {region.name} (language hint {region.locale}, fallback currency {region.currency})")
 
     print(f"Step 1: Crawling {base_url}...")
     print("__" * 30)
@@ -140,6 +155,9 @@ async def run_pipeline(
         user_agent=user_agent,
         use_rendered_browser=use_rendered_browser,
         wait_seconds=wait_seconds,
+        accept_language=region.accept_language if region else None,
+        locale=region.locale if region else None,
+        default_currency=region.currency if region else None,
     )
     print(
         f"Visited {crawl_result.pages_visited} pages "
@@ -151,6 +169,14 @@ async def run_pipeline(
         print("No products with both a title and a positive price were found.")
         print(explain_empty_crawl(crawl_result))
         return
+
+    # Safety net in case the cleaning step dropped or blanked the currency.
+    fallback_currency = region.currency if region else "USD"
+    for row in clean_results:
+        row["currency"] = (row.get("currency") or fallback_currency).upper()
+
+    currencies = sorted({row["currency"] for row in clean_results})
+    print(f"Detected currencies: {', '.join(currencies)}")
 
     if output_format in {"csv", "json"}:
         exported_path = export_scraped_data(clean_results, output_format=output_format, output_dir=output_dir)
@@ -182,6 +208,13 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--user-agent", default=None, help="Custom browser string for requests.")
     parser.add_argument("--render-js", action="store_true", help="Use Playwright headless browser for JavaScript-heavy pages.")
     parser.add_argument("--wait-seconds", type=float, default=2.0, help="Seconds to wait after page load for JS-rendered content.")
+    parser.add_argument(
+        "--region",
+        type=str.upper,
+        default="",
+        choices=["", *REGIONS],
+        help="Country code for language/currency hints (e.g. CI, FR, US). Empty = site default.",
+    )
     return parser.parse_args()
 
 
@@ -198,6 +231,7 @@ async def main(args: argparse.Namespace) -> None:
             wait_seconds=args.wait_seconds,
             crawl_depth=args.crawl_depth,
             max_pages=args.max_pages,
+            region_code=args.region,
         )
     finally:
         await engine.dispose()  # close aiosqlite worker threads before the loop shuts down

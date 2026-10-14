@@ -34,6 +34,11 @@ def clean_scraped_data(raw_data: List[Dict]) -> List[Dict]:
     if "price" in df.columns:
         df["price"] = pd.to_numeric(df["price"], errors="coerce")
 
+    # Normalise currency codes; blanks stay "" so main.py can apply the region fallback.
+    if "currency" not in df.columns:
+        df["currency"] = ""
+    df["currency"] = df["currency"].fillna("").astype(str).str.strip().str.upper()
+
     df = df[df["title"] != "N/A"]
     df = df[df["price"] > 0]
     df = df.drop_duplicates(subset=["url"], keep="last")
@@ -41,7 +46,12 @@ def clean_scraped_data(raw_data: List[Dict]) -> List[Dict]:
     if "title" in df.columns:
         df["title"] = df["title"].str.replace(r"\s+", " ", regex=True)
 
-    df = df.sort_values(by=["price", "title"], ascending=[True, True], kind="mergesort")
+    # Group by currency so prices in different currencies are not interleaved.
+    df = df.sort_values(
+        by=["currency", "price", "title"],
+        ascending=[True, True, True],
+        kind="mergesort",
+    )
     return df.to_dict(orient="records")
 
 

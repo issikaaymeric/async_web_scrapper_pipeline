@@ -6,6 +6,60 @@ from urllib.parse import parse_qsl, urldefrag, urlencode, urljoin, urlsplit, url
 from bs4 import BeautifulSoup, Tag
 
 
+from core.currency import CURRENCY_INFO
+
+# Longest symbols first so "US$" wins over "$" and "FCFA" over "CFA".
+_SYMBOLS = sorted(
+    {
+        "FCFA": "XOF", "F CFA": "XOF", "CFA": "XOF", "US$": "USD", "CA$": "CAD",
+        "A$": "AUD", "R$": "BRL", "GH₵": "GHS", "KSh": "KES", "€": "EUR", "£": "GBP",
+        "₦": "NGN", "₵": "GHS", "₹": "INR", "₺": "TRY", "zł": "PLN", "¥": "JPY", "$": "USD",
+    }.items(),
+    key=lambda item: -len(item[0]),
+)
+_ISO_CODE = re.compile(r"\b[A-Z]{3}\b")
+_DOLLAR_LIKE = {"USD", "CAD", "AUD", "NZD", "MXN"}
+
+
+def _normalise_code(value: Any) -> Optional[str]:
+    if isinstance(value, str):
+        code = value.strip().upper()
+        if len(code) == 3 and code.isalpha():
+            return code
+    return None
+
+
+def _currency_from_text(raw: Any, default: Optional[str] = None) -> Optional[str]:
+    """Find an ISO code or symbol in price text such as '12 500 FCFA' or '£12.99'."""
+    if not raw:
+        return None
+    text = str(raw)
+    for match in _ISO_CODE.findall(text):
+        if match in CURRENCY_INFO:
+            return match
+    for symbol, code in _SYMBOLS:
+        if symbol in text:
+            if symbol == "$" and default in _DOLLAR_LIKE:   # bare "$" is ambiguous
+                return default
+            if code == "XOF" and default == "XAF":          # FCFA is shared by both zones
+                return "XAF"
+            return code
+    return None
+
+
+def _offer_currency(offers: Any, item: Dict[str, Any]) -> Optional[str]:
+    if isinstance(offers, list):
+        offers = next((o for o in offers if isinstance(o, dict)), {})
+    if not isinstance(offers, dict):
+        offers = {}
+    spec = offers.get("priceSpecification")
+    if isinstance(spec, list):
+        spec = next((s for s in spec if isinstance(s, dict)), {})
+    spec_currency = spec.get("priceCurrency") if isinstance(spec, dict) else None
+    return _normalise_code(
+        _first_value(offers.get("priceCurrency"), spec_currency, item.get("priceCurrency"))
+    )
+
 PRODUCT_PATH_PATTERN = re.compile(
     r"/(?:dp|gp/product|product|products|item|items|p|shop)/", re.IGNORECASE
 )
@@ -147,6 +201,7 @@ def _product_from_json_ld(soup: BeautifulSoup) -> Dict[str, Any]:
             candidate = {
                 "title": _clean_text(item.get("name")),
                 "price": _price_number(_offer_price(item.get("offers"), item)),
+                "currency": _normalise_code(_offer_currency(item.get("offers"), item)),
                 "rating": _price_number(aggregate_rating.get("ratingValue")) or None,
                 "image_url": _image_value(item.get("image")),
             }
@@ -206,6 +261,7 @@ def parse_product_html(
     url: str,
     *,
     require_product_signal: bool = False,
+    default_currency: Optional[str] = None,
 ) -> Optional[Dict]:
     """Parse a product page. With require_product_signal, listing/info pages return None."""
     if not html_content:
@@ -229,20 +285,33 @@ def parse_product_html(
             "h1",
         ),
     )
+    raw_price = None
     price = _price_number(structured.get("price"))
     if not price:
-        price = _price_number(
-            _meta_content(
-                soup,
-                'meta[property="product:price:amount"]',
-                'meta[property="og:price:amount"]',
-                'meta[itemprop="price"]',
-                '[itemprop="price"]',
-                'meta[name="twitter:data1"]',
-                "[data-price]",
-                "[class*='price']",
-            )
+        raw_price = _meta_content(
+            soup,
+            'meta[property="product:price:amount"]',
+            'meta[property="og:price:amount"]',
+            'meta[itemprop="price"]',
+            '[itemprop="price"]',
+            'meta[name="twitter:data1"]',
+            "[data-price]",
+            "[class*='price']",
         )
+        price = _price_number(raw_price)
+
+    currency = structured.get("currency") or _normalise_code(
+        _meta_content(
+            soup,
+            'meta[property="product:price:currency"]',
+            'meta[property="og:price:currency"]',
+            'meta[itemprop="priceCurrency"]',
+            '[itemprop="priceCurrency"]',
+        )
+    )
+    if not currency:
+        currency = _currency_from_text(raw_price, default_currency)
+    currency = currency or default_currency or "USD"
 
     image_url = (
         structured.get("image_url")
@@ -276,6 +345,7 @@ def parse_product_html(
     return {
         "title": _clean_text(title),
         "price": price,
+        "currency": currency,
         "rating": rating,
         "image_url": image_url,
         "url": url,

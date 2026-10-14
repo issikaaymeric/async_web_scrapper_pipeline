@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from sqlalchemy import ForeignKey, func
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy import ForeignKey, func, text
 
 load_dotenv()
 
@@ -34,6 +35,7 @@ class Product(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(index=True)
     price: Mapped[float] = mapped_column()
+    currency: Mapped[str] = mapped_column(default="USD", server_default="USD")
     rating: Mapped[float | None] = mapped_column(nullable=True)
     image_url: Mapped[str | None] = mapped_column(nullable=True)
     url: Mapped[str] = mapped_column(unique=True)
@@ -47,6 +49,7 @@ class ProductPriceHistory(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     product_id: Mapped[int] = mapped_column(ForeignKey("products.id"), index=True)
     price: Mapped[float] = mapped_column()
+    currency: Mapped[str] = mapped_column(default="USD", server_default="USD")
     captured_at: Mapped[datetime] = mapped_column(server_default=func.now(), index=True)
 
     product: Mapped[Product] = relationship(back_populates="price_history")
@@ -59,3 +62,20 @@ async def init_db() -> None:
     """Create the tables if they do not exist yet."""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        
+               
+async def _ensure_currency_columns(conn) -> None:
+    for table in ("products", "product_price_history"):
+        info = (await conn.execute(text(f"PRAGMA table_info({table})"))).fetchall()
+        if info and "currency" not in {row[1] for row in info}:
+            await conn.execute(
+                text(f"ALTER TABLE {table} ADD COLUMN currency VARCHAR(3) NOT NULL DEFAULT 'USD'")
+            )
+
+
+async def init_db() -> None:
+    """Create the tables if they do not exist yet, and add missing columns."""
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+        if DATABASE_URL.startswith("sqlite"):
+            await _ensure_currency_columns(conn)

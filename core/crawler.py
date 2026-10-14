@@ -78,6 +78,9 @@ async def crawl_site(
     user_agent: str | None = None,
     use_rendered_browser: bool = False,
     wait_seconds: float = 2.0,
+    accept_language: str | None = None,
+    locale: str | None = None,
+    default_currency: str | None = None,
 ) -> CrawlResult:
     """Crawl one host within explicit page/depth limits and robots rules.
 
@@ -130,6 +133,8 @@ async def crawl_site(
                     user_agent=user_agent,
                     use_rendered_browser=use_rendered_browser,
                     wait_seconds=wait_seconds,
+                    accept_language=accept_language,
+                    locale=locale,
                 )
                 html_pages.append(page_html[0] if page_html else "")
                 await asyncio.sleep(crawl_delay)
@@ -140,6 +145,8 @@ async def crawl_site(
                 user_agent=user_agent,
                 use_rendered_browser=use_rendered_browser,
                 wait_seconds=wait_seconds,
+                accept_language=accept_language,
+                locale=locale,
             )
 
         pages_visited += len(batch)
@@ -155,6 +162,7 @@ async def crawl_site(
                 page_html,
                 page_url,
                 require_product_signal=page_url not in product_urls,
+                default_currency=default_currency,
             )
             if product and product["title"] != "N/A" and product["price"] > 0:
                 products_by_url[page_url] = product
